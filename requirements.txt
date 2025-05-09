@@ -3,7 +3,6 @@ numpy
 opencv-python
 roboflow
 pandas
-pickle
 supervision
-shutil
 scikit-learn
+streamlit

@@ -1,7 +1,13 @@
+import cv2
+import numpy as np
 from sklearn.cluster import KMeans
 
 class TeamAssigner:
     def __init__(self):
+        self.team_colors = None
+        self.kmeans = KMeans(n_clusters=2, random_state=42)
+        self.is_fitted = False
+        self.min_players_for_training = 4  # Minimalan broj igrača za treniranje
         self.team_colors = {}
         self.player_team_dict = {}
     
@@ -38,34 +44,59 @@ class TeamAssigner:
         return player_color
 
 
-    def assign_team_color(self,frame, player_detections):
-        
+    def assign_team_color(self, frame, detections):
+        """Određuje boje timova na temelju detekcija igrača."""
         player_colors = []
-        for _, player_detection in player_detections.items():
-            bbox = player_detection["bbox"]
-            player_color =  self.get_player_color(frame,bbox)
-            player_colors.append(player_color)
         
-        kmeans = KMeans(n_clusters=2, init="k-means++",n_init=10).fit(player_colors)
-
-        self.kmeans = kmeans
-
-        self.team_colors[1] = kmeans.cluster_centers_[0]
-        self.team_colors[2] = kmeans.cluster_centers_[1]
-
-
-    def get_player_team(self,frame,player_bbox,player_id):
-        if player_id in self.player_team_dict:
-            return self.player_team_dict[player_id]
-
-        player_color = self.get_player_color(frame,player_bbox)
-
-        team_id = self.kmeans.predict(player_color.reshape(1,-1))[0]
-        team_id+=1
-
-        if player_id == 91:
-            team_id=1
-
-        self.player_team_dict[player_id] = team_id
-
-        return team_id
+        for det in detections:
+            if det[3] == 0:  # person class
+                bbox = det[0]
+                x1, y1, x2, y2 = map(int, bbox)
+                
+                # Izreži područje igrača
+                player_roi = frame[y1:y2, x1:x2]
+                if player_roi.size == 0:
+                    continue
+                
+                # Izračunaj dominantnu boju
+                player_roi = cv2.cvtColor(player_roi, cv2.COLOR_BGR2RGB)
+                pixels = player_roi.reshape(-1, 3)
+                player_colors.append(np.mean(pixels, axis=0))
+        
+        # Treniraj model samo ako imamo dovoljno igrača
+        if len(player_colors) >= self.min_players_for_training:
+            try:
+                player_colors = np.array(player_colors)
+                self.kmeans.fit(player_colors)
+                self.team_colors = self.kmeans.cluster_centers_
+                self.is_fitted = True
+                print(f"K-means model treniran na {len(player_colors)} igrača")
+            except Exception as e:
+                print(f"Greška pri treniranju K-means modela: {str(e)}")
+                self.is_fitted = False
+    
+    def get_player_team(self, frame, bbox, track_id):
+        """Određuje tim igrača na temelju njegove boje."""
+        if not self.is_fitted:
+            # Fallback na jednostavnu metodu ako model nije treniran
+            return 1 if bbox[0] < frame.shape[1]/2 else 2
+        
+        try:
+            x1, y1, x2, y2 = map(int, bbox)
+            player_roi = frame[y1:y2, x1:x2]
+            
+            if player_roi.size == 0:
+                return 1 if bbox[0] < frame.shape[1]/2 else 2
+            
+            # Izračunaj dominantnu boju igrača
+            player_roi = cv2.cvtColor(player_roi, cv2.COLOR_BGR2RGB)
+            pixels = player_roi.reshape(-1, 3)
+            player_color = np.mean(pixels, axis=0)
+            
+            # Predvidi tim
+            team_id = self.kmeans.predict(player_color.reshape(1,-1))[0]
+            return team_id + 1  # Vrati 1 ili 2
+            
+        except Exception as e:
+            print(f"Greška pri određivanju tima: {str(e)}")
+            return 1 if bbox[0] < frame.shape[1]/2 else 2
